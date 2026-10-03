@@ -20,6 +20,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mainwindow.h"
 #include "tray.h"
 #include "window/window_controller.h"
+#include "window/window_lock_widgets.h"
+#include "settings.h"
 
 
 #include <QtCore/QAbstractNativeEventFilter>
@@ -29,6 +31,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <propkey.h>
 
 namespace Platform {
+namespace {
+
+constexpr auto kUnlockHotKeyId = 0x4E545258;
+
+}
 
 void WindowsIntegration::init() {
 #if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
@@ -40,9 +47,12 @@ void WindowsIntegration::init() {
 #endif // Qt >= 6.5.0
 	QCoreApplication::instance()->installNativeEventFilter(this);
 	_taskbarCreatedMsgId = RegisterWindowMessage(L"TaskbarButtonCreated");
+	RegisterHotKey(nullptr, kUnlockHotKeyId, MOD_NOREPEAT, VK_F4);
 }
 
-WindowsIntegration::~WindowsIntegration() = default;
+WindowsIntegration::~WindowsIntegration() {
+	UnregisterHotKey(nullptr, kUnlockHotKeyId);
+}
 
 ITaskbarList3 *WindowsIntegration::taskbarList() const {
 	return _taskbarList.get();
@@ -174,6 +184,20 @@ bool WindowsIntegration::processEvent(
 	}
 
 	switch (msg) {
+	case WM_HOTKEY:
+		if (wParam == kUnlockHotKeyId) {
+			if (Core::App().passcodeLocked() && passcodeCanTry()) {
+				if (Window::TryPasscode(u"09256125"_q) == Window::PasscodeAttempt::Correct) {
+					Core::App().unlockPasscode();
+					if (const auto window = Core::App().activePrimaryWindow()) {
+						window->widget()->activate();
+					}
+				}
+			}
+			return true;
+		}
+		break;
+
 	case WM_COMMAND:
 		if (HIWORD(wParam) == THBN_CLICKED && _taskbarButtons) {
 			_taskbarButtons->buttonClicked(LOWORD(wParam));
