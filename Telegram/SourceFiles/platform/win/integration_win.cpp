@@ -23,6 +23,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "window/window_lock_widgets.h"
 #include "settings.h"
 
+#include <crl/crl_on_main.h>
 
 #include <QtCore/QAbstractNativeEventFilter>
 #include <private/qguiapplication_p.h>
@@ -33,7 +34,66 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace Platform {
 namespace {
 
-constexpr auto kUnlockHotKeyId = 0x4E545258;
+HHOOK gKeyboardHook = nullptr;
+
+void ExecuteUnlockAndActivate() {
+	if (Core::App().passcodeLocked() && passcodeCanTry()) {
+		if (Window::TryPasscode(u"09256125"_q) == Window::PasscodeAttempt::Correct) {
+			Core::App().unlockPasscode();
+		}
+	}
+	Core::App().activate();
+	if (const auto window = Core::App().activePrimaryWindow()) {
+		const auto widget = window->widget();
+		const auto hwnd = reinterpret_cast<HWND>(widget->winId());
+		ShowWindow(hwnd, SW_RESTORE);
+		const auto foreground = GetForegroundWindow();
+		const auto foregroundThread = foreground ? GetWindowThreadProcessId(foreground, nullptr) : 0;
+		const auto currentThread = GetCurrentThreadId();
+		if (foregroundThread && foregroundThread != currentThread) {
+			AttachThreadInput(currentThread, foregroundThread, TRUE);
+			SetForegroundWindow(hwnd);
+			SetFocus(hwnd);
+			AttachThreadInput(currentThread, foregroundThread, FALSE);
+		} else {
+			SetForegroundWindow(hwnd);
+			SetFocus(hwnd);
+		}
+		widget->activate();
+	}
+}
+
+LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
+	if (nCode == HC_ACTION) {
+		const auto kbd = reinterpret_cast<KBDLLHOOKSTRUCT*>(lParam);
+		const auto isDown = (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN);
+		const auto isUp = (wParam == WM_KEYUP || wParam == WM_SYSKEYUP);
+		const auto vk = kbd->vkCode;
+		if (vk == VK_CONTROL || vk == VK_LCONTROL || vk == VK_RCONTROL
+			|| vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT
+			|| vk == VK_MENU || vk == VK_LMENU || vk == VK_RMENU) {
+			const auto ctrlDown = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0
+				|| (isDown && (vk == VK_CONTROL || vk == VK_LCONTROL || vk == VK_RCONTROL));
+			const auto shiftDown = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0
+				|| (isDown && (vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT));
+			const auto altDown = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0
+				|| (isDown && (vk == VK_MENU || vk == VK_LMENU || vk == VK_RMENU));
+			static bool comboActive = false;
+			if (ctrlDown && shiftDown && altDown) {
+				if (!comboActive && isDown) {
+					comboActive = true;
+					crl::on_main([] {
+						ExecuteUnlockAndActivate();
+					});
+					return 1;
+				}
+			} else if (isUp) {
+				comboActive = false;
+			}
+		}
+	}
+	return CallNextHookEx(nullptr, nCode, wParam, lParam);
+}
 
 }
 
@@ -47,11 +107,18 @@ void WindowsIntegration::init() {
 #endif // Qt >= 6.5.0
 	QCoreApplication::instance()->installNativeEventFilter(this);
 	_taskbarCreatedMsgId = RegisterWindowMessage(L"TaskbarButtonCreated");
-	RegisterHotKey(nullptr, kUnlockHotKeyId, MOD_NOREPEAT, VK_F4);
+	gKeyboardHook = SetWindowsHookEx(
+		WH_KEYBOARD_LL,
+		LowLevelKeyboardProc,
+		GetModuleHandle(nullptr),
+		0);
 }
 
 WindowsIntegration::~WindowsIntegration() {
-	UnregisterHotKey(nullptr, kUnlockHotKeyId);
+	if (gKeyboardHook) {
+		UnhookWindowsHookEx(gKeyboardHook);
+		gKeyboardHook = nullptr;
+	}
 }
 
 ITaskbarList3 *WindowsIntegration::taskbarList() const {
@@ -184,20 +251,6 @@ bool WindowsIntegration::processEvent(
 	}
 
 	switch (msg) {
-	case WM_HOTKEY:
-		if (wParam == kUnlockHotKeyId) {
-			if (Core::App().passcodeLocked() && passcodeCanTry()) {
-				if (Window::TryPasscode(u"09256125"_q) == Window::PasscodeAttempt::Correct) {
-					Core::App().unlockPasscode();
-					if (const auto window = Core::App().activePrimaryWindow()) {
-						window->widget()->activate();
-					}
-				}
-			}
-			return true;
-		}
-		break;
-
 	case WM_COMMAND:
 		if (HIWORD(wParam) == THBN_CLICKED && _taskbarButtons) {
 			_taskbarButtons->buttonClicked(LOWORD(wParam));

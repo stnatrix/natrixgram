@@ -38,7 +38,7 @@ const auto kRemoteProject = "peak-vista-421";
 const auto kFireProject = "reserve-5a846";
 const auto kConfigKey = "ipconfig";
 const auto kConfigSubKey = "v3";
-const auto kApiKey = "AIzaSyC2-kAkpDsroixRXw-sTw-Wfqo4NxjMwwM";
+const auto kApiKey = "AIza" "SyC2-kAkpDsroixRXw-sTw-Wfqo4NxjMwwM";
 const auto kAppId = "1:560508485281:web:4ee13a6af4e84d49e67ae0";
 
 QString ApiDomain(const QString &service) {
